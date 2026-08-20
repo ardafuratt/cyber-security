@@ -173,6 +173,8 @@
     return clamp(-rect.top / total, 0, 1);
   }
 
+  var smoothProgress = 0;
+
   function queueSeek(time, reason) {
     if (!canSeekNow()) return;
 
@@ -185,12 +187,29 @@
     if (Math.abs(video.currentTime - next) < SEEK_EPS) return;
 
     try {
-      video.currentTime = next;
+      if (typeof video.fastSeek === 'function') {
+        video.fastSeek(next);
+      } else {
+        video.currentTime = next;
+      }
       log('seek ->', next, reason || '');
     } catch (err) {
-      console.error('[scrub] currentTime seek failed', err);
+      try {
+        video.currentTime = next;
+      } catch (e) {}
     }
   }
+
+  video.addEventListener('seeked', function () {
+    if (video.readyState >= HAVE_CURRENT_DATA) showVideoFrame();
+    log('seeked', { currentTime: video.currentTime, targetTime: targetTime });
+
+    if (pendingSeekTime !== null && !video.seeking) {
+      var next = pendingSeekTime;
+      pendingSeekTime = null;
+      queueSeek(next, 'seeked-flush');
+    }
+  });
 
   function applyVideoTime(p) {
     if (!canSeekNow()) return;
@@ -229,7 +248,21 @@
   }
 
   function tick() {
-    var p = computeProgress();
+    var rawP = computeProgress();
+
+    // Smooth lerp on desktop for cinematic glide; direct response on touch
+    if (isMobile()) {
+      smoothProgress = rawP;
+    } else {
+      var diff = rawP - smoothProgress;
+      if (Math.abs(diff) < 0.0001) {
+        smoothProgress = rawP;
+      } else {
+        smoothProgress += diff * 0.18;
+      }
+    }
+
+    var p = smoothProgress;
     maybeLogFrame(p);
 
     railFill.style.height = (p * 100) + '%';
