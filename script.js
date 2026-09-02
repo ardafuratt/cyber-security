@@ -73,18 +73,20 @@
   function markVideoReady(source) {
     duration = video.duration || 0;
     if (duration > 0 && video.readyState >= HAVE_METADATA) {
-      if (!videoReady) {
-        videoReady = true;
-        log('video ready (' + source + ')', {
-          duration: duration.toFixed(2) + 's',
-          readyState: video.readyState
-        });
-      }
+      videoReady = true;
+      showVideoFrame();
+      log('video ready (' + source + ')', {
+        duration: duration.toFixed(2) + 's',
+        readyState: video.readyState
+      });
     }
   }
 
   function canSeekNow() {
-    return videoReady && duration > 0 && (!isMobile() || videoUnlocked);
+    if (!videoReady && video.duration > 0 && video.readyState >= HAVE_METADATA) {
+      markVideoReady('canSeekNow');
+    }
+    return (videoReady || (video.duration > 0 && video.readyState >= HAVE_METADATA)) && (!isMobile() || videoUnlocked);
   }
 
   function unlockVideo() {
@@ -97,7 +99,6 @@
       playAttempt.then(function () {
         video.pause();
         markVideoReady('unlock');
-        queueSeek(0.001, 'unlock');
         applyVideoTime(computeProgress());
       }).catch(function (err) {
         log('unlock play blocked', err);
@@ -105,13 +106,14 @@
       });
     } else {
       markVideoReady('unlock-sync');
-      queueSeek(0.001, 'unlock-sync');
+      applyVideoTime(computeProgress());
     }
   }
 
   function armFirstFrame() {
     markVideoReady('loadeddata');
     video.pause();
+    showVideoFrame();
     if (!isMobile()) {
       queueSeek(0.001, 'armFirstFrame');
     }
@@ -129,9 +131,14 @@
     console.error('[scrub] video error', video.error);
   });
   video.addEventListener('seeked', function () {
-    pendingSeekTime = null;
-    if (video.readyState >= HAVE_CURRENT_DATA) showVideoFrame();
+    showVideoFrame();
     log('seeked', { currentTime: video.currentTime, targetTime: targetTime });
+
+    if (pendingSeekTime !== null && !video.seeking) {
+      var next = pendingSeekTime;
+      pendingSeekTime = null;
+      queueSeek(next, 'seeked-flush');
+    }
   });
 
   if (isMobile()) {
@@ -147,7 +154,8 @@
   function easeInQuad(t) { return t * t; }
 
   function snapTime(t) {
-    return Math.round(clamp(t, 0, duration - SEEK_EPS) * FPS) / FPS;
+    var maxD = (duration > 0 ? duration : (video.duration || 5));
+    return Math.round(clamp(t, 0, maxD - SEEK_EPS) * FPS) / FPS;
   }
 
   function fadeStyle(el, t0, t1, p, dir) {
@@ -187,41 +195,20 @@
     if (Math.abs(video.currentTime - next) < SEEK_EPS) return;
 
     try {
-      if (typeof video.fastSeek === 'function') {
-        video.fastSeek(next);
-      } else {
-        video.currentTime = next;
-      }
+      video.currentTime = next;
       log('seek ->', next, reason || '');
-    } catch (err) {
-      try {
-        video.currentTime = next;
-      } catch (e) {}
-    }
+    } catch (err) {}
   }
-
-  video.addEventListener('seeked', function () {
-    if (video.readyState >= HAVE_CURRENT_DATA) showVideoFrame();
-    log('seeked', { currentTime: video.currentTime, targetTime: targetTime });
-
-    if (pendingSeekTime !== null && !video.seeking) {
-      var next = pendingSeekTime;
-      pendingSeekTime = null;
-      queueSeek(next, 'seeked-flush');
-    }
-  });
 
   function applyVideoTime(p) {
     if (!canSeekNow()) return;
 
+    var curDuration = duration || video.duration || 0;
+    if (curDuration <= 0) return;
+
     // Scroll 0..1 maps linearly to video timeline; last ~4% reserved for reveal.
     var videoP = remap(p, 0, 0.96);
-    targetTime = snapTime(videoP * duration);
-
-    if (video.seeking) {
-      pendingSeekTime = targetTime;
-      return;
-    }
+    targetTime = snapTime(videoP * curDuration);
 
     queueSeek(targetTime, 'scroll');
   }
@@ -309,5 +296,7 @@
   touchDevice.addEventListener('change', onLayoutChange);
 
   measureStage();
+  markVideoReady('init');
+  if (video.readyState >= HAVE_CURRENT_DATA) showVideoFrame();
   requestAnimationFrame(tick);
 })();
